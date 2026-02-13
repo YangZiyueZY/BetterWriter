@@ -21,6 +21,15 @@ database.sqlite
 *.db
 *.sqlite
 
+# Python virtual environment
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
 # IDE and Tool directories
 .vscode/*
 !.vscode/extensions.json
