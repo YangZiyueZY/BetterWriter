@@ -13,16 +13,31 @@ import fileRoutes from './routes/files';
 import storageRoutes from './routes/storage';
 import uploadRoutes from './routes/upload';
 import mobileRoutes from './routes/mobile';
+import adminRoutes from './routes/admin';
 import User from './models/User';
 import File from './models/File';
 import StorageConfig from './models/StorageConfig';
+import DeviceSession from './models/DeviceSession';
+import SecurityAlert from './models/SecurityAlert';
+import DeviceAudit from './models/DeviceAudit';
 import bcrypt from 'bcryptjs';
 import { runMigrations } from './migrations/runMigrations';
+import { ENABLE_MOBILE, SERVER_SESSION_ID } from './config';
+import { initLogRetention, patchConsoleToFile } from './services/logger';
+import { startMirrorWatcher } from './services/mirrorWatcher';
+import { startCloudSyncScheduler } from './services/cloudSyncScheduler';
 
 dotenv.config();
+patchConsoleToFile();
+void DeviceSession;
+void SecurityAlert;
+void DeviceAudit;
 
 const app = express();
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3001;
+if (process.env.TRUST_PROXY === 'true') {
+  app.set('trust proxy', true);
+}
 
 // Security Middlewares
 app.use(
@@ -56,6 +71,10 @@ app.use(
 app.use(express.json({ limit: '50mb' })); // Increase limit for file content
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+app.get('/api/health', (_req, res) => {
+  res.json({ ok: true, ts: Date.now(), sid: SERVER_SESSION_ID });
+});
+
 // Rate Limiting (auth only)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -79,7 +98,10 @@ app.use('/api/user', userRoutes);
 app.use('/api/files', apiLimiter, fileRoutes);
 app.use('/api/storage', apiLimiter, storageRoutes);
 app.use('/api/upload', apiLimiter, uploadRoutes);
-app.use('/api/mobile', mobileRoutes);
+app.use('/api/admin', apiLimiter, adminRoutes);
+if (ENABLE_MOBILE) {
+  app.use('/api/mobile', mobileRoutes);
+}
 
 app.use(express.static(path.join(__dirname, '../../dist')));
 
@@ -92,7 +114,13 @@ const startServer = async () => {
   try {
     await sequelize.sync();
     await runMigrations(sequelize);
+    await initLogRetention(7);
+    setInterval(() => {
+      initLogRetention(7).catch(() => undefined);
+    }, 12 * 60 * 60 * 1000);
     console.log('Database synced');
+    startMirrorWatcher();
+    startCloudSyncScheduler();
 
     const userCount = await User.count();
     if (userCount === 0) {
@@ -102,13 +130,15 @@ const startServer = async () => {
         crypto.randomBytes(24).toString('base64url').slice(0, 20);
 
       const hashedPassword = await bcrypt.hash(password, 10);
-      await User.create({ username, password: hashedPassword });
+      await User.create({ username, password: hashedPassword, tokenVersion: 0 });
 
       const adminCredsPath = path.join(__dirname, '..', '.admin-credentials');
       const content = `username=${username}\npassword=${password}\n`;
       try {
-        await writeFile(adminCredsPath, content, { flag: 'wx' });
-      } catch {}
+        await writeFile(adminCredsPath, content);
+      } catch (err) {
+        console.warn('Failed to write admin credentials file:', err);
+      }
 
       console.log(`Initial admin created: ${username}`);
       console.log(`Initial admin password: ${password}`);

@@ -1,11 +1,17 @@
-import React, { useState, useEffect } from 'react';
+import React, { Suspense, lazy, useEffect, useState } from 'react';
 import { useStore } from '../store/useStore';
-import { X, Cloud, HardDrive, Server, Palette, Type, Moon, Image as ImageIcon, Check, ChevronRight, User as UserIcon, LogOut, KeyRound, Lock, Loader2, Eye, EyeOff, Smartphone, RefreshCw, Copy, Edit2 } from 'lucide-react';
+import { X, Cloud, HardDrive, Server, Palette, Type, Moon, Image as ImageIcon, Check, ChevronRight, User as UserIcon, LogOut, KeyRound, Lock, Loader2, Edit2, Users, Terminal } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Tooltip } from './Tooltip';
+import { PasswordInput } from './PasswordInput';
+import { LazyErrorBoundary } from './LazyErrorBoundary';
 import { getEyeCareModalBackgroundColor } from '../lib/theme';
-import api, { storageApi, mobileApi, userApi } from '../services/api';
+import api, { storageApi, userApi } from '../services/api';
+
+const LazyAdminUsersTab = lazy(() => import('./AdminUsersTab').then((m: any) => ({ default: m.AdminUsersTab })));
+const LazyDeveloperModeTab = lazy(() => import('./DeveloperModeTab').then((m: any) => ({ default: m.DeveloperModeTab })));
+const LazyDeviceManagementPanel = lazy(() => import('./DeviceManagementPanel').then((m: any) => ({ default: m.DeviceManagementPanel })));
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -24,7 +30,7 @@ const EYE_CARE_COLORS = [
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
   const { settings, updateSettings, user, logout, updateUserAvatar } = useStore();
-  const [activeTab, setActiveTab] = useState<'general' | 'storage' | 'account' | 'interface'>('general');
+  const [activeTab, setActiveTab] = useState<'general' | 'storage' | 'account' | 'manage' | 'developer'>('general');
   const [storageError, setStorageError] = useState('');
   const [storageSuccess, setStorageSuccess] = useState('');
   const [isSavingStorage, setIsSavingStorage] = useState(false);
@@ -35,12 +41,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
   const [avatarError, setAvatarError] = useState('');
   const avatarInputRef = React.useRef<HTMLInputElement>(null);
-
-  // Mobile Interface State
-  const [mobileKey, setMobileKey] = useState('');
-  const [isLoadingKey, setIsLoadingKey] = useState(false);
-  const [isRegeneratingKey, setIsRegeneratingKey] = useState(false);
-  const [copySuccess, setCopySuccess] = useState(false);
   
   // Password Change State
   const [showPasswordChange, setShowPasswordChange] = useState(false);
@@ -50,15 +50,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
   const [passwordError, setPasswordError] = useState('');
   const [passwordSuccess, setPasswordSuccess] = useState('');
   const [isChangingPassword, setIsChangingPassword] = useState(false);
-  
-  // Password Visibility State
-  const [showOldPassword, setShowOldPassword] = useState(false);
-  const [showNewPassword, setShowNewPassword] = useState(false);
-  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
   const modalBgColor = getEyeCareModalBackgroundColor(settings);
   const s3Config = settings.s3Config ?? { endpoint: '', bucket: '', accessKey: '', secretKey: '', region: '' };
   const webDavConfig = settings.webDavConfig ?? { url: '', username: '', password: '' };
+  const isAdmin = user?.username === 'admin';
+
+  useEffect(() => {
+    if (!isAdmin && (activeTab === 'manage' || activeTab === 'developer')) {
+      setActiveTab('general');
+    }
+  }, [isAdmin, activeTab]);
 
   const saveStorageSettings = async () => {
     await storageApi.update({
@@ -166,52 +168,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
       setNewPassword('');
       setConfirmPassword('');
       
-      // Auto logout after 2 seconds
       setTimeout(() => {
+        try {
+          localStorage.removeItem('betterwriter-storage-v2');
+        } catch {}
         logout();
         onClose();
+        window.location.reload();
       }, 2000);
     } catch (err: any) {
       setPasswordError(err.response?.data?.error || '密码修改失败，请检查旧密码是否正确');
     } finally {
       setIsChangingPassword(false);
     }
-  };
-
-  useEffect(() => {
-    if (activeTab === 'interface' && isOpen) {
-      const fetchKey = async () => {
-        setIsLoadingKey(true);
-        try {
-          const data = await mobileApi.getKey();
-          setMobileKey(data.mobileKey);
-        } catch (err) {
-          console.error('Failed to fetch mobile key', err);
-        } finally {
-          setIsLoadingKey(false);
-        }
-      };
-      fetchKey();
-    }
-  }, [activeTab, isOpen]);
-
-  const handleRegenerateKey = async () => {
-    setIsRegeneratingKey(true);
-    try {
-      const data = await mobileApi.regenerateKey();
-      setMobileKey(data.mobileKey);
-    } catch (err) {
-      console.error('Failed to regenerate key', err);
-    } finally {
-      setIsRegeneratingKey(false);
-    }
-  };
-
-  const copyToClipboard = () => {
-    const url = `http://${window.location.hostname}:3001/api/mobile/sync/${mobileKey}`;
-    navigator.clipboard.writeText(url);
-    setCopySuccess(true);
-    setTimeout(() => setCopySuccess(false), 2000);
   };
 
   const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -335,21 +304,42 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                    {activeTab === 'account' && <ChevronRight size={14} className="hidden md:block text-blue-400/50" />}
                  </button>
 
-                 <button
-                   onClick={() => setActiveTab('interface')}
-                   className={cn(
-                     "flex-1 md:flex-none md:w-full flex items-center justify-center md:justify-between px-4 py-2 md:py-3 rounded-xl text-sm font-medium transition-all duration-200 group whitespace-nowrap",
-                     activeTab === 'interface' 
-                        ? "bg-white dark:bg-slate-800 text-blue-600 dark:text-blue-400 shadow-sm ring-1 ring-slate-200 dark:ring-slate-700" 
-                        : "text-slate-600 dark:text-slate-400 hover:bg-slate-200/50 dark:hover:bg-slate-800/50 hover:text-slate-900 dark:hover:text-slate-200"
-                   )}
-                 >
-                   <div className="flex items-center gap-2 md:gap-3">
-                     <Smartphone size={18} className={cn("transition-colors", activeTab === 'interface' ? "text-blue-500 dark:text-blue-400" : "text-slate-400 dark:text-slate-500 group-hover:text-slate-600")} />
-                     <span>接口</span>
-                   </div>
-                   {activeTab === 'interface' && <ChevronRight size={14} className="hidden md:block text-blue-400/50" />}
-                 </button>
+                 {isAdmin && (
+                   <>
+                     <button
+                       onClick={() => setActiveTab('manage')}
+                       className={cn(
+                         "flex-1 md:flex-none md:w-full flex items-center justify-center md:justify-between px-4 py-2 md:py-3 rounded-xl text-sm font-medium transition-all duration-200 group whitespace-nowrap",
+                         activeTab === 'manage'
+                           ? "bg-white dark:bg-slate-800 text-blue-600 dark:text-blue-400 shadow-sm ring-1 ring-slate-200 dark:ring-slate-700"
+                           : "text-slate-600 dark:text-slate-400 hover:bg-slate-200/50 dark:hover:bg-slate-800/50 hover:text-slate-900 dark:hover:text-slate-200"
+                       )}
+                     >
+                       <div className="flex items-center gap-2 md:gap-3">
+                         <Users size={18} className={cn("transition-colors", activeTab === 'manage' ? "text-blue-500 dark:text-blue-400" : "text-slate-400 dark:text-slate-500 group-hover:text-slate-600")} />
+                         <span>管理</span>
+                       </div>
+                       {activeTab === 'manage' && <ChevronRight size={14} className="hidden md:block text-blue-400/50" />}
+                     </button>
+
+                     <button
+                       onClick={() => setActiveTab('developer')}
+                       className={cn(
+                         "flex-1 md:flex-none md:w-full flex items-center justify-center md:justify-between px-4 py-2 md:py-3 rounded-xl text-sm font-medium transition-all duration-200 group whitespace-nowrap",
+                         activeTab === 'developer'
+                           ? "bg-white dark:bg-slate-800 text-blue-600 dark:text-blue-400 shadow-sm ring-1 ring-slate-200 dark:ring-slate-700"
+                           : "text-slate-600 dark:text-slate-400 hover:bg-slate-200/50 dark:hover:bg-slate-800/50 hover:text-slate-900 dark:hover:text-slate-200"
+                       )}
+                     >
+                       <div className="flex items-center gap-2 md:gap-3">
+                         <Terminal size={18} className={cn("transition-colors", activeTab === 'developer' ? "text-blue-500 dark:text-blue-400" : "text-slate-400 dark:text-slate-500 group-hover:text-slate-600")} />
+                         <span>开发者模式</span>
+                       </div>
+                       {activeTab === 'developer' && <ChevronRight size={14} className="hidden md:block text-blue-400/50" />}
+                     </button>
+                   </>
+                 )}
+
               </div>
     
               {/* Content */}
@@ -799,71 +789,46 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                     </section>
 
                   </motion.div>
-                ) : activeTab === 'interface' ? (
-                  <motion.div 
-                    key="interface"
+                ) : activeTab === 'manage' ? (
+                  <motion.div
+                    key="manage"
                     initial={{ opacity: 0, x: 20 }}
                     animate={{ opacity: 1, x: 0 }}
                     exit={{ opacity: 0, x: -20 }}
                     transition={{ duration: 0.2 }}
-                    className="p-8 max-w-2xl mx-auto space-y-8 absolute inset-0 overflow-y-auto"
+                    className="p-8 max-w-5xl mx-auto space-y-8 absolute inset-0 overflow-y-auto"
                   >
                     <section className="bg-white/60 dark:bg-slate-800/40 rounded-2xl p-6 shadow-sm border border-slate-100 dark:border-slate-800 backdrop-blur-sm">
                       <h3 className="text-lg font-bold text-slate-800 dark:text-slate-100 mb-6 flex items-center gap-2">
-                         <Smartphone size={20} className="text-blue-500" />
-                         <span>移动端接口</span>
+                        <Users size={20} className="text-blue-500" />
+                        <span>用户管理</span>
                       </h3>
-                      
-                      <div className="space-y-6">
-                        <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-900/50 rounded-xl p-4 text-sm text-blue-800 dark:text-blue-200">
-                          <p className="flex gap-2">
-                            <span className="shrink-0">ℹ️</span>
-                            <span>此接口用于移动端 APP 连接您的账户并同步数据。请妥善保管此链接，不要分享给他人。</span>
-                          </p>
-                        </div>
-
-                        <div className="space-y-3">
-                          <label className="text-sm font-semibold text-slate-700 dark:text-slate-300">
-                            专属调用接口 (Unique Interface URL)
-                          </label>
-                          
-                          <div className="relative group">
-                            <div className="w-full px-4 py-3 pr-24 border border-slate-200 dark:border-slate-700 rounded-xl text-sm bg-slate-50 dark:bg-slate-950 text-slate-600 dark:text-slate-400 font-mono break-all">
-                              {isLoadingKey ? (
-                                <div className="flex items-center gap-2">
-                                  <Loader2 className="h-4 w-4 animate-spin" />
-                                  <span>加载中...</span>
-                                </div>
-                              ) : (
-                                `http://${window.location.hostname}:3001/api/mobile/sync/${mobileKey}`
-                              )}
-                            </div>
-                            
-                            <div className="absolute right-2 top-1/2 -translate-y-1/2 flex gap-1">
-                              <Tooltip content={copySuccess ? "复制成功" : "复制链接"}>
-                                <button
-                                  onClick={copyToClipboard}
-                                  disabled={isLoadingKey || !mobileKey}
-                                  className="p-2 hover:bg-white dark:hover:bg-slate-800 rounded-lg text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
-                                >
-                                  {copySuccess ? <Check size={18} className="text-emerald-500" /> : <Copy size={18} />}
-                                </button>
-                              </Tooltip>
-                            </div>
-                          </div>
-                          
-                          <div className="flex justify-end pt-2">
-                             <button
-                                onClick={handleRegenerateKey}
-                                disabled={isRegeneratingKey || isLoadingKey}
-                                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-600 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
-                             >
-                                <RefreshCw size={14} className={cn(isRegeneratingKey && "animate-spin")} />
-                                <span>重置接口密钥</span>
-                             </button>
-                          </div>
-                        </div>
-                      </div>
+                      <LazyErrorBoundary title="用户管理加载失败">
+                        <Suspense fallback={<div className="h-24 rounded-2xl bg-slate-200/60 dark:bg-slate-800/60" />}>
+                          <LazyAdminUsersTab />
+                        </Suspense>
+                      </LazyErrorBoundary>
+                    </section>
+                  </motion.div>
+                ) : activeTab === 'developer' ? (
+                  <motion.div
+                    key="developer"
+                    initial={{ opacity: 0, x: 20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -20 }}
+                    transition={{ duration: 0.2 }}
+                    className="p-8 max-w-5xl mx-auto space-y-8 absolute inset-0 overflow-y-auto"
+                  >
+                    <section className="bg-white/60 dark:bg-slate-800/40 rounded-2xl p-6 shadow-sm border border-slate-100 dark:border-slate-800 backdrop-blur-sm">
+                      <h3 className="text-lg font-bold text-slate-800 dark:text-slate-100 mb-6 flex items-center gap-2">
+                        <Terminal size={20} className="text-blue-500" />
+                        <span>开发者模式</span>
+                      </h3>
+                      <LazyErrorBoundary title="开发者模块加载失败">
+                        <Suspense fallback={<div className="h-24 rounded-2xl bg-slate-200/60 dark:bg-slate-800/60" />}>
+                          <LazyDeveloperModeTab />
+                        </Suspense>
+                      </LazyErrorBoundary>
                     </section>
                   </motion.div>
                 ) : (
@@ -952,6 +917,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                                     </button>
 
                                     <div className="pt-6 border-t border-slate-100 dark:border-slate-800">
+                                        <div className="flex items-center justify-between w-full text-sm font-semibold text-slate-700 dark:text-slate-300">
+                                            <span className="flex items-center gap-2">
+                                                <Server size={18} />
+                                                登录设备管理
+                                            </span>
+                                        </div>
+                                        <div className="pt-4">
+                                            <LazyErrorBoundary title="设备管理加载失败">
+                                              <Suspense fallback={<div className="h-24 rounded-2xl bg-slate-200/60 dark:bg-slate-800/60" />}>
+                                                <LazyDeviceManagementPanel />
+                                              </Suspense>
+                                            </LazyErrorBoundary>
+                                        </div>
+                                    </div>
+
+                                    <div className="pt-6 border-t border-slate-100 dark:border-slate-800">
                                         <button 
                                             onClick={() => setShowPasswordChange(!showPasswordChange)}
                                             className="flex items-center justify-between w-full text-sm font-semibold text-slate-700 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
@@ -986,60 +967,30 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                                                         )}
 
                                                         <div className="space-y-3">
-                                                            <div className="relative group">
-                                                                <input 
-                                                                    type={showOldPassword ? "text" : "password"}
-                                                                    value={oldPassword}
-                                                                    onChange={(e) => setOldPassword(e.target.value)}
-                                                                    placeholder="当前密码"
-                                                                    className="w-full px-4 py-3 pl-10 pr-10 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all bg-white/70 dark:bg-slate-950/70 dark:text-slate-100 shadow-sm"
-                                                                    required
-                                                                />
-                                                                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() => setShowOldPassword(!showOldPassword)}
-                                                                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 focus:outline-none transition-colors"
-                                                                >
-                                                                    {showOldPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-                                                                </button>
-                                                            </div>
-                                                            <div className="relative group">
-                                                                <input 
-                                                                    type={showNewPassword ? "text" : "password"}
-                                                                    value={newPassword}
-                                                                    onChange={(e) => setNewPassword(e.target.value)}
-                                                                    placeholder="新密码 (至少 6 位)"
-                                                                    className="w-full px-4 py-3 pl-10 pr-10 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all bg-white/70 dark:bg-slate-950/70 dark:text-slate-100 shadow-sm"
-                                                                    required
-                                                                />
-                                                                <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() => setShowNewPassword(!showNewPassword)}
-                                                                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 focus:outline-none transition-colors"
-                                                                >
-                                                                    {showNewPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-                                                                </button>
-                                                            </div>
-                                                            <div className="relative group">
-                                                                <input 
-                                                                    type={showConfirmPassword ? "text" : "password"}
-                                                                    value={confirmPassword}
-                                                                    onChange={(e) => setConfirmPassword(e.target.value)}
-                                                                    placeholder="确认新密码"
-                                                                    className="w-full px-4 py-3 pl-10 pr-10 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all bg-white/70 dark:bg-slate-950/70 dark:text-slate-100 shadow-sm"
-                                                                    required
-                                                                />
-                                                                <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                                                                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 focus:outline-none transition-colors"
-                                                                >
-                                                                    {showConfirmPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-                                                                </button>
-                                                            </div>
+                                                            <PasswordInput
+                                                              value={oldPassword}
+                                                              onChange={setOldPassword}
+                                                              placeholder="当前密码"
+                                                              required
+                                                              autoComplete="current-password"
+                                                              leftIcon={<Lock className="h-4 w-4 text-slate-400" />}
+                                                            />
+                                                            <PasswordInput
+                                                              value={newPassword}
+                                                              onChange={setNewPassword}
+                                                              placeholder="新密码 (至少 6 位)"
+                                                              required
+                                                              autoComplete="new-password"
+                                                              leftIcon={<KeyRound className="h-4 w-4 text-slate-400" />}
+                                                            />
+                                                            <PasswordInput
+                                                              value={confirmPassword}
+                                                              onChange={setConfirmPassword}
+                                                              placeholder="确认新密码"
+                                                              required
+                                                              autoComplete="new-password"
+                                                              leftIcon={<KeyRound className="h-4 w-4 text-slate-400" />}
+                                                            />
                                                         </div>
 
                                                         <button 

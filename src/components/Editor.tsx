@@ -1,13 +1,6 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { Suspense, lazy, useState, useRef, useEffect, useCallback } from 'react';
+import type { ComponentType, LazyExoticComponent } from 'react';
 import { useStore } from '../store/useStore';
-import ReactMarkdown from 'react-markdown';
-import remarkMath from 'remark-math';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import 'katex/dist/katex.min.css';
-import { Mermaid } from './Mermaid';
-import remarkGfm from 'remark-gfm';
-import { MathKatex } from './MathKatex';
 import { cn } from '../lib/utils';
 import { Split, Eye, Edit3, Save, FileType, Menu, Loader2, Check, AlertCircle, HelpCircle, Undo, Redo } from 'lucide-react';
 import { MarkdownToolbar } from './MarkdownToolbar';
@@ -15,15 +8,16 @@ import { Tooltip } from './Tooltip';
 import { insertMarkdown } from '../lib/markdownUtils';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ConfirmModal } from './ConfirmModal';
-import { sanitizeHref, sanitizeImageSrc } from '../lib/security';
-import type { FileItem } from '../types';
+import { LazyErrorBoundary } from './LazyErrorBoundary';
+import type { FileItem, Settings } from '../types';
 import { uploadApi } from '../services/api';
 import { useUploadStore } from '../store/useUploadStore';
 import { v4 as uuidv4 } from 'uuid';
 
-const resolvePlugin = (plugin: any) => {
-  return plugin && typeof plugin.default === 'function' ? plugin.default : plugin;
-};
+type MarkdownPreviewProps = { content: string; settings: Settings };
+const LazyMarkdownPreview = lazy(() => import('./MarkdownPreview').then((m: any) => ({ default: m.MarkdownPreview }))) as unknown as LazyExoticComponent<
+  ComponentType<MarkdownPreviewProps>
+>;
 
 interface EditorProps {
   onToggleSidebar?: () => void;
@@ -382,11 +376,6 @@ export const Editor: React.FC<EditorProps> = ({ onToggleSidebar }) => {
       convertFileFormat(activeFile.id, newFormat);
   };
 
-  const urlTransform = (url: string, key: string) => {
-      if (key === 'src') return sanitizeImageSrc(url);
-      return sanitizeHref(url);
-  };
-
   return (
     <div className="flex-1 flex flex-col h-full bg-transparent dark:bg-slate-950 relative transition-colors duration-300">
       {/* Toolbar */}
@@ -580,64 +569,27 @@ export const Editor: React.FC<EditorProps> = ({ onToggleSidebar }) => {
                     viewMode === 'split' ? "w-1/2 p-8 sm:p-10" : "w-full max-w-4xl mx-auto p-12 bg-white/40 dark:bg-slate-900/80 shadow-sm my-4 rounded-xl"
                 )}
             >
-                 <div 
-                    className="prose prose-slate dark:prose-invert max-w-none prose-headings:font-bold prose-h1:text-4xl prose-h1:tracking-tight prose-a:text-blue-600 dark:prose-a:text-blue-400 prose-img:rounded-xl prose-img:shadow-lg"
-                    style={{
-                        fontSize: `${settings.fontSize || 16}px`,
-                        lineHeight: settings.lineHeight || 1.6,
-                        letterSpacing: `${settings.letterSpacing || 0}px`
-                    }}
-                 >
-                    {activeFile.format === 'md' ? (
-                        <ReactMarkdown 
-                            remarkPlugins={[
-                                resolvePlugin(remarkGfm), 
-                                resolvePlugin(remarkMath)
-                            ]} 
-                            urlTransform={urlTransform}
-                            components={{
-                                code({node, inline, className, children, ...props}: any) {
-                                    const match = /language-(\w+)/.exec(className || '');
-                                    const isMermaid = match && match[1] === 'mermaid';
-                                     const isMath =
-                                       (className || '').includes('language-math') ||
-                                       (className || '').includes('math-inline') ||
-                                       (className || '').includes('math-display');
-                                     const displayMode = (className || '').includes('math-display') || (!inline && (className || '').includes('language-math'));
-
-                                    if (isMermaid) {
-                                        return <Mermaid chart={String(children).replace(/\n$/, '')} />;
-                                    }
- 
-                                     if (isMath) {
-                                       return <MathKatex value={String(children)} displayMode={displayMode} />;
-                                     }
-
-                                    return !inline && match ? (
-                                        <SyntaxHighlighter
-                                            style={oneDark}
-                                            language={match[1]}
-                                            PreTag="div"
-                                            {...props}
-                                        >
-                                            {String(children).replace(/\n$/, '')}
-                                        </SyntaxHighlighter>
-                                    ) : (
-                                        <code className={className} {...props}>
-                                            {children}
-                                        </code>
-                                    );
-                                }
-                            }}
-                        >
-                            {activeFile.content || '*无内容*'}
-                        </ReactMarkdown>
-                    ) : (
-                        <pre className="whitespace-pre-wrap font-sans text-slate-700 dark:text-slate-300 bg-transparent border-none p-0 leading-relaxed">
-                            {activeFile.content || '无内容'}
-                        </pre>
-                    )}
-                </div>
+                 {activeFile.format === 'md' ? (
+                   <LazyErrorBoundary title="预览模块加载失败">
+                     <Suspense
+                       fallback={
+                         <div className="space-y-4">
+                           <div className="h-6 w-1/3 rounded-lg bg-slate-200/60 dark:bg-slate-800/60" />
+                           <div className="h-4 w-full rounded-lg bg-slate-200/60 dark:bg-slate-800/60" />
+                           <div className="h-4 w-11/12 rounded-lg bg-slate-200/60 dark:bg-slate-800/60" />
+                           <div className="h-4 w-4/5 rounded-lg bg-slate-200/60 dark:bg-slate-800/60" />
+                           <div className="h-32 w-full rounded-2xl bg-slate-200/60 dark:bg-slate-800/60" />
+                         </div>
+                       }
+                     >
+                       <LazyMarkdownPreview content={activeFile.content || '*无内容*'} settings={settings} />
+                     </Suspense>
+                   </LazyErrorBoundary>
+                 ) : (
+                   <pre className="whitespace-pre-wrap font-sans text-slate-700 dark:text-slate-300 bg-transparent border-none p-0 leading-relaxed">
+                     {activeFile.content || '无内容'}
+                   </pre>
+                 )}
             </motion.div>
           )}
         </AnimatePresence>

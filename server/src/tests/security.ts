@@ -3,7 +3,7 @@ process.env.STORAGE_SECRET = process.env.STORAGE_SECRET || 'test-storage-secret'
 
 import assert from 'assert';
 import { assertSafeRemoteUrl } from '../lib/ssrf';
-import { mirrorDelete, mirrorUpsert } from '../services/localMirror';
+import { mirrorDelete, mirrorDeleteRelative, mirrorUpsert } from '../services/localMirror';
 
 const run = async () => {
   await assert.rejects(
@@ -32,22 +32,12 @@ const run = async () => {
   const u = await assertSafeRemoteUrl('https://1.1.1.1', { allowPrivate: false });
   assert.strictEqual(u.protocol, 'https:');
 
-  await assert.rejects(
-    () => mirrorUpsert(1, { id: '../pwn', type: 'file', format: 'md', content: 'x' }),
-    /Invalid file id|Invalid path/
-  );
-
-  await assert.rejects(
-    () => mirrorUpsert(1, { id: 'C:\\pwn', type: 'file', format: 'md', content: 'x' }),
-    /Invalid file id|Invalid path/
-  );
-
-  await assert.rejects(
-    () => mirrorUpsert(1, { id: 'a/b', type: 'file', format: 'md', content: 'x' }),
-    /Invalid file id|Invalid path/
-  );
+  await assert.doesNotReject(() => mirrorUpsert(1, { id: '../pwn', name: '../pwn', type: 'file', format: 'md', content: 'x' }));
+  await assert.doesNotReject(() => mirrorUpsert(1, { id: 'C:\\pwn', name: 'C:\\pwn', type: 'file', format: 'md', content: 'x' }));
+  await assert.doesNotReject(() => mirrorUpsert(1, { id: 'a/b', name: 'a/b', type: 'file', format: 'md', content: 'x' }));
 
   await assert.rejects(() => mirrorDelete(1, '../pwn'), /Invalid file id|Invalid path/);
+  await assert.rejects(() => mirrorDeleteRelative(1, '../pwn.txt'), /Invalid path/);
 
   console.log('security tests passed');
 };

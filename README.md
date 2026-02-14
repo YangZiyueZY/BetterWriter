@@ -65,6 +65,18 @@ cp .env.example .env
 *   `STORAGE_SECRET`: 用于加密存储配置的密钥（**必须修改**，且设置后不可轻易更改，否则会导致已保存的配置无法解密）。
 *   `PORT`: 后端服务端口 (默认为 3001)。
 *   `ALLOW_PRIVATE_STORAGE_ENDPOINTS`: 是否允许连接内网 WebDAV/S3 地址 (生产环境建议设为 `false`)。
+*   `LOGIN_MAX_FAILED_ATTEMPTS`: 同一 IP 最大登录失败次数（默认 5）。
+*   `LOGIN_FAIL_WINDOW_MS`: 统计窗口（毫秒，默认 10 分钟）。
+*   `LOGIN_BAN_MS`: 封禁时长（毫秒，默认 15 分钟）。
+*   `TRUST_PROXY`: 若部署在反向代理后，设为 `true` 以启用正确的客户端 IP 识别。
+*   `MAX_ACTIVE_DEVICES_PER_ACCOUNT`: 单账号同时登录设备上限（默认 5）。
+*   会话策略：服务重启或密码修改会强制所有已登录设备下线；设备端会在下一次请求时自动清理本地缓存并回到登录页。
+*   管理员/开发者文档：`docs/admin-manual.md`、`docs/dev-guide.md`、`docs/test-report.md`
+*   全局 Loading：`docs/loading-overlay.md`
+*   性能优化报告：`docs/perf-optimization-report.md`
+*   云同步说明：`docs/cloud-sync.md`
+*   Markdown 语法：`docs/markdown-syntax.md`
+*   升级指南：`docs/upgrade-guide.md`
 
 #### 前端配置 (`.env`)
 在项目根目录下复制 `.env.example` 为 `.env`：
@@ -74,6 +86,7 @@ cp .env.example .env
 ```
 
 *   `VITE_API_BASE_URL`: 后端 API 地址。开发环境下通常为 `http://localhost:3001/api`，生产环境请根据部署域名配置。
+*   前端会通过 `/api/health` 做连通性检测；当无法连接到后端时，会自动切换到“无法连接到后端”错误页并支持重试。
 
 ### 4. 启动开发服务器
 
@@ -91,6 +104,69 @@ npm run dev
 npm run dev
 ```
 前端服务将在 `http://localhost:5173` 启动。
+
+## 🌐 局域网访问（LAN）
+
+BetterWriter 支持两种常见的局域网访问方式：
+
+说明：移动端接口默认已停用。如需开启，请在 `server/.env` 设置 `ENABLE_MOBILE=true`。
+
+### 方式 A（推荐）：后端托管前端静态资源（同源，无需 CORS）
+这种方式最省事：构建前端 + 构建后端，并由后端对外提供 Web 与 API（默认端口 3001，已监听 `0.0.0.0`）。
+
+1) 配置后端环境变量（必做）
+- 复制 `server/.env.example` 为 `server/.env`，并设置 `JWT_SECRET`、`STORAGE_SECRET` 为强随机字符串
+
+2) 安装依赖并启动
+```bash
+npm install
+cd server
+npm install
+cd ..
+npm run start:lan
+```
+
+3) 在同一局域网的其他设备访问
+- 浏览器打开 `http://<你的电脑局域网IP>:3001/`
+- API 同源：`http://<你的电脑局域网IP>:3001/api`
+
+如果访问不到，通常是端口未放行（Windows 防火墙/安全软件）。请确保入站允许 TCP 3001。
+
+Windows 防火墙快速放行（任选一种）：
+- 图形界面：开始菜单搜索“高级安全 Windows Defender 防火墙” → 入站规则 → 新建规则 → 端口 → TCP 3001 → 允许连接 → 勾选专用网络（必要时也勾选公用）→ 完成
+- 命令行（管理员 PowerShell）：
+```bash
+netsh advfirewall firewall add rule name=BetterWriter-3001 dir=in action=allow protocol=TCP localport=3001 profile=private,public
+```
+
+如果仍无法从其它设备访问：
+- 确认其它设备与电脑在同一网段（例如同为 192.168.0.x），且路由器未开启 AP/客户端隔离
+- 优先用 `http://192.168.0.18:3001/` 这类 IPv4 地址访问（以你本机实际 IP 为准）
+
+管理员登录提示：
+- 初始管理员只会在数据库里“第一次没有任何用户”时创建（基于项目根目录的 `database.sqlite`）
+- 如果你删除/重置了 `database.sqlite`，请同时删除 `server/.admin-credentials` 后再启动服务，让它重新生成并写入最新账号密码
+
+### 方式 B：开发模式（热更新），前后端分别启动
+适合开发调试：前端 Vite 以 LAN 模式对外监听，后端用 dev 模式启动。
+
+1) 后端（终端 1）
+```bash
+cd server
+npm run dev
+```
+
+2) 前端（终端 2）
+```bash
+npm run dev:lan
+```
+
+3) 访问地址
+- `http://<你的电脑局域网IP>:5173/`
+
+说明：
+- 后端在非 production 时默认放行浏览器 Origin（开发方便）；如果你以 `NODE_ENV=production` 运行后端并仍要用方式 B，请在 `server/.env` 设置 `CORS_ORIGINS`，加入 `http://<你的电脑局域网IP>:5173`
+- 方式 B 若访问不到，请确保入站允许 TCP 5173/3001
 
 ## 📦 部署构建
 

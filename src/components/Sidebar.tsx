@@ -1,8 +1,8 @@
-import React, { useState, useRef, useMemo } from 'react';
+import React, { Suspense, lazy, useState, useRef, useMemo } from 'react';
+import type { ComponentType, LazyExoticComponent } from 'react';
 import { useStore } from '../store/useStore';
 import { FileText, FileCode, Folder, FolderOpen, Plus, Trash2, Settings, ChevronRight, Upload, Edit2, ArrowRightLeft, X } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { SettingsModal } from './SettingsModal';
 import { FileCreationModal } from './FileCreationModal';
 import { MoveModal } from './MoveModal';
 import { ConfirmModal } from './ConfirmModal';
@@ -11,6 +11,12 @@ import { UploadProgressModal } from './UploadProgressModal';
 import { Tooltip } from './Tooltip';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { FileSystemItem } from '../types';
+import { LazyErrorBoundary } from './LazyErrorBoundary';
+
+type SettingsModalProps = { isOpen: boolean; onClose: () => void };
+const LazySettingsModal = lazy(() => import('./SettingsModal').then((m: any) => ({ default: m.SettingsModal }))) as unknown as LazyExoticComponent<
+  ComponentType<SettingsModalProps>
+>;
 
 interface FileTreeItemProps {
   item: FileSystemItem;
@@ -363,7 +369,11 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
         </div>
       </div>
 
-      <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
+      <LazyErrorBoundary title="设置模块加载失败">
+        <Suspense fallback={null}>
+          <LazySettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
+        </Suspense>
+      </LazyErrorBoundary>
       <FileCreationModal 
         key={`create-${isCreateOpen}-${createParentId ?? 'root'}`}
         isOpen={isCreateOpen} 

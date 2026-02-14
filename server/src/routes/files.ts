@@ -2,8 +2,11 @@ import express from 'express';
 import File from '../models/File';
 import User from '../models/User';
 import { authenticateToken } from '../middleware/authenticateToken';
-import { mirrorDelete, mirrorUpsert } from '../services/localMirror';
-import { syncDeleteFromCloud, syncUpsertToCloud } from '../services/cloudSync';
+import { mirrorDelete, mirrorDeleteRelative, mirrorUpsert } from '../services/localMirror';
+import { syncDeleteFromCloud, syncDeleteRelativeFromCloud, syncUpsertToCloud } from '../services/cloudSync';
+import { resolveRelativePath } from '../services/syncPaths';
+import { enqueueFilesSync } from '../services/syncQueue';
+import { ensureUniqueNameInDb } from '../services/nameUniqueness';
 
 const router = express.Router();
 
@@ -53,8 +56,12 @@ router.put('/:id', authenticateToken, async (req: any, res) => {
     if (format != null && !isAllowedFormat(format)) {
       return res.status(400).json({ message: 'Invalid format' });
     }
+    if (type !== 'file' && type !== 'folder') {
+      return res.status(400).json({ message: 'Invalid type' });
+    }
 
     const existingFile = await File.findOne({ where: { id, userId: req.user.id } });
+    const existingRel = existingFile ? await resolveRelativePath(req.user.id, existingFile) : null;
 
     if (existingFile) {
         // Conflict detection:
@@ -78,11 +85,19 @@ router.put('/:id', authenticateToken, async (req: any, res) => {
         }
     }
 
+    const finalName = await ensureUniqueNameInDb({
+      userId: req.user.id,
+      parentId: parentId ?? null,
+      type,
+      desiredName: String(name ?? ''),
+      selfId: id,
+    });
+
     const upsertData: any = {
       id,
       userId: req.user.id,
       parentId,
-      name,
+      name: finalName,
       type,
       content,
       format,
@@ -105,6 +120,44 @@ router.put('/:id', authenticateToken, async (req: any, res) => {
       void mirrorUpsert(req.user.id, finalFile)
         .then(() => syncUpsertToCloud(req.user.id, finalFile))
         .catch(() => undefined);
+      if (String(finalFile.getDataValue('type')) === 'folder') {
+        void File.findAll({ where: { userId: req.user.id } })
+          .then((all) => {
+            const byParent = new Map<string | null, any[]>();
+            for (const f of all) {
+              const pid = (f as any).getDataValue('parentId');
+              const key = pid ? String(pid) : null;
+              const arr = byParent.get(key) || [];
+              arr.push(f);
+              byParent.set(key, arr);
+            }
+            const out: any[] = [];
+            const stack: string[] = [String(finalFile.getDataValue('id'))];
+            while (stack.length) {
+              const cur = stack.pop()!;
+              const children = byParent.get(cur) || [];
+              for (const c of children) {
+                out.push(c);
+                if (String((c as any).getDataValue('type')) === 'folder') {
+                  stack.push(String((c as any).getDataValue('id')));
+                }
+              }
+            }
+            enqueueFilesSync(req.user.id, out);
+          })
+          .catch(() => undefined);
+      }
+      if (existingRel) {
+        void resolveRelativePath(req.user.id, finalFile)
+          .then((nextRel) => {
+            if (nextRel !== existingRel) {
+              return mirrorDeleteRelative(req.user.id, existingRel)
+                .then(() => syncDeleteRelativeFromCloud(req.user.id, existingRel))
+                .catch(() => undefined);
+            }
+          })
+          .catch(() => undefined);
+      }
     }
   } catch (error) {
     console.error('Error saving file:', error);
@@ -119,11 +172,16 @@ router.delete('/:id', authenticateToken, async (req: any, res) => {
     if (!isSafeId(id)) {
       return res.status(400).json({ message: 'Invalid file id' });
     }
+    const existing = await File.findOne({ where: { id, userId: req.user.id } });
+    const rel = existing ? await resolveRelativePath(req.user.id, existing) : null;
     await File.destroy({ where: { id, userId: req.user.id } });
     res.sendStatus(204);
-    void mirrorDelete(req.user.id, id)
-      .then(() => syncDeleteFromCloud(req.user.id, id))
-      .catch(() => undefined);
+    if (rel) {
+      void mirrorDeleteRelative(req.user.id, rel)
+        .then(() => syncDeleteRelativeFromCloud(req.user.id, rel))
+        .catch(() => undefined);
+    }
+    void mirrorDelete(req.user.id, id).then(() => syncDeleteFromCloud(req.user.id, id)).catch(() => undefined);
   } catch (error) {
     res.status(500).json({ message: 'Error deleting file' });
   }

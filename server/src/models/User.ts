@@ -5,6 +5,9 @@ class User extends Model {
   public id!: number;
   public username!: string;
   public password!: string;
+  public tokenVersion!: number;
+  public status!: 'active' | 'disabled';
+  public lastLoginAt!: number | null;
   public mobileKey!: string | null;
   public avatar!: string | null;
 }
@@ -24,6 +27,20 @@ User.init(
     password: {
       type: DataTypes.STRING,
       allowNull: false,
+    },
+    tokenVersion: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    status: {
+      type: DataTypes.STRING,
+      allowNull: false,
+      defaultValue: 'active',
+    },
+    lastLoginAt: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
     },
     mobileKey: {
       type: DataTypes.STRING,

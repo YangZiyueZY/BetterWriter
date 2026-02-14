@@ -169,4 +169,34 @@ router.post('/sync-now', authenticateToken, async (req: any, res) => {
   }
 });
 
+router.post('/sync-item', authenticateToken, async (req: any, res) => {
+  try {
+    const id = String(req.body?.id || '');
+    if (!id) return res.status(400).json({ ok: false, message: 'Missing id' });
+    const all = await File.findAll({ where: { userId: req.user.id } });
+    const map = new Map<string, any>();
+    for (const f of all) map.set(String((f as any).getDataValue('id')), f);
+    const root = map.get(id);
+    if (!root) return res.status(404).json({ ok: false, message: 'Not found' });
+
+    const out: any[] = [];
+    const stack: string[] = [id];
+    while (stack.length) {
+      const cur = stack.pop()!;
+      const item = map.get(cur);
+      if (!item) continue;
+      out.push(item);
+      for (const f of all) {
+        const pid = (f as any).getDataValue('parentId');
+        if (pid && String(pid) === cur) stack.push(String((f as any).getDataValue('id')));
+      }
+    }
+
+    res.json({ ok: true, queued: out.length });
+    enqueueFilesSync(req.user.id, out);
+  } catch {
+    res.status(500).json({ ok: false, message: 'Sync failed' });
+  }
+});
+
 export default router;

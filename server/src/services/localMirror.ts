@@ -1,14 +1,9 @@
 import fs from 'fs/promises';
 import path from 'path';
+import { resolveRelativePath, toNotesMirrorPath } from './syncPaths';
 
 export const getLocalMirrorBaseDir = (): string => {
   return path.resolve(process.cwd(), '..', 'BetterWriter');
-};
-
-const isSafeSegment = (value: unknown): value is string => {
-  if (typeof value !== 'string') return false;
-  if (value.length < 1 || value.length > 128) return false;
-  return /^[a-zA-Z0-9_-]+$/.test(value);
 };
 
 const resolveInside = (baseDir: string, targetPath: string): string => {
@@ -26,47 +21,65 @@ const ensureDir = async (dir: string) => {
 
 export const mirrorUpsert = async (userId: number, file: any): Promise<void> => {
   const baseDir = getLocalMirrorBaseDir();
-  const userDir = path.join(baseDir, String(userId));
-  await ensureDir(userDir);
-
-  if (!isSafeSegment(file?.id)) {
-    throw new Error('Invalid file id');
-  }
+  const rel = await resolveRelativePath(userId, file);
+  const localPath = toNotesMirrorPath(baseDir, userId, rel);
+  const safeLocalPath = resolveInside(baseDir, localPath);
 
   if (file.type === 'folder') {
-    const folderPath = resolveInside(userDir, file.id);
-    await ensureDir(folderPath);
+    await ensureDir(safeLocalPath);
+    await fs
+      .writeFile(path.join(safeLocalPath, '.bwmeta.json'), JSON.stringify({ id: String(file.id), type: 'folder' }), 'utf8')
+      .catch(() => undefined);
     return;
   }
 
-  const ext = file.format === 'md' ? 'md' : 'txt';
-  const filePath = resolveInside(userDir, `${file.id}.${ext}`);
-  await fs.writeFile(filePath, typeof file.content === 'string' ? file.content : '', 'utf8');
+  await ensureDir(path.dirname(safeLocalPath));
+  await fs.writeFile(safeLocalPath, typeof file.content === 'string' ? file.content : '', 'utf8');
+  await fs
+    .writeFile(
+      `${safeLocalPath}.bwmeta.json`,
+      JSON.stringify({ id: String(file.id), type: 'file', format: file.format === 'md' ? 'md' : 'txt' }),
+      'utf8'
+    )
+    .catch(() => undefined);
+};
+
+export const mirrorDeleteRelative = async (userId: number, rel: string): Promise<void> => {
+  const baseDir = getLocalMirrorBaseDir();
+  const cleaned = rel.replace(/^\/+/, '');
+  const segs = cleaned.split('/').filter(Boolean);
+  if (segs.some((s) => s === '.' || s === '..')) {
+    throw new Error('Invalid path');
+  }
+  const localPath = toNotesMirrorPath(baseDir, userId, cleaned);
+  const safeLocalPath = resolveInside(baseDir, localPath);
+  try {
+    const stat = await fs.stat(safeLocalPath);
+    if (stat.isDirectory()) {
+      await fs.rm(safeLocalPath, { recursive: true, force: true });
+    } else {
+      await fs.rm(safeLocalPath, { force: true });
+      await fs.rm(`${safeLocalPath}.bwmeta.json`, { force: true }).catch(() => undefined);
+    }
+  } catch {
+  }
 };
 
 export const mirrorDelete = async (userId: number, fileId: string): Promise<void> => {
   const baseDir = getLocalMirrorBaseDir();
-  const userDir = path.join(baseDir, String(userId));
-  if (!isSafeSegment(fileId)) {
-    throw new Error('Invalid file id');
-  }
+  const legacyUserDir = path.join(baseDir, String(userId));
   const candidates = [
-    resolveInside(userDir, `${fileId}.md`),
-    resolveInside(userDir, `${fileId}.txt`),
-    resolveInside(userDir, fileId),
+    resolveInside(legacyUserDir, `${fileId}.md`),
+    resolveInside(legacyUserDir, `${fileId}.txt`),
+    resolveInside(legacyUserDir, fileId),
   ];
-
   await Promise.all(
     candidates.map(async (p) => {
       try {
         const stat = await fs.stat(p);
-        if (stat.isDirectory()) {
-          await fs.rm(p, { recursive: true, force: true });
-        } else {
-          await fs.rm(p, { force: true });
-        }
+        if (stat.isDirectory()) await fs.rm(p, { recursive: true, force: true });
+        else await fs.rm(p, { force: true });
       } catch {
-        return;
       }
     })
   );

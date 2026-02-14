@@ -9,6 +9,7 @@ const lastSyncAt = new Map<string, number>();
 const pendingSync = new Set<string>();
 const pendingTimers = new Map<string, ReturnType<typeof setTimeout>>();
 let storageConfigTimer: ReturnType<typeof setTimeout> | null = null;
+const DEFAULT_WELCOME_ID = uuidv4();
 
 const parseTime = (v: unknown): number => {
   if (typeof v === 'number') return v;
@@ -68,7 +69,7 @@ interface AppState {
   checkFileUpdate: (id: string) => Promise<void>;
 }
 
-type PersistedAppState = Pick<AppState, 'items' | 'settings' | 'user' | 'token'>;
+type PersistedAppState = Pick<AppState, 'items' | 'activeFileId' | 'settings' | 'user' | 'token'>;
 
 const DEFAULT_SETTINGS: Settings = {
   storageType: 'local',
@@ -98,7 +99,7 @@ export const useStore = create<AppState>()(
     (set, get) => ({
       items: [
         {
-          id: '1',
+          id: DEFAULT_WELCOME_ID,
           parentId: null,
           name: '欢迎使用',
           type: 'file',
@@ -108,7 +109,7 @@ export const useStore = create<AppState>()(
           updatedAt: Date.now(),
         }
       ],
-      activeFileId: '1',
+      activeFileId: DEFAULT_WELCOME_ID,
       sidebarOpen: true,
       settings: DEFAULT_SETTINGS,
       user: null,
@@ -119,7 +120,28 @@ export const useStore = create<AppState>()(
         try {
             const files = await fileApi.getAll();
             if (files && files.length > 0) {
-                set({ items: normalizeItems(files) });
+                set((state) => {
+                  const normalized = normalizeItems(files);
+                  const exists = state.activeFileId ? normalized.some((i) => i.id === state.activeFileId) : false;
+                  const nextActiveFileId =
+                    exists
+                      ? state.activeFileId
+                      : normalized
+                          .filter((i): i is FileItem => i.type === 'file')
+                          .slice()
+                          .sort((a, b) => (parseTime((b as any).updatedAt) - parseTime((a as any).updatedAt)))[0]?.id ?? null;
+                  return { items: normalized, activeFileId: nextActiveFileId } as any;
+                });
+            } else {
+                const state = get();
+                if (state.items.length > 0) {
+                  const fileIds = state.items.filter((i): i is FileItem => i.type === 'file').map((i) => i.id);
+                  fileIds.forEach((id) => void state.syncFile(id));
+                }
+                if (state.activeFileId && !state.items.some((i) => i.id === state.activeFileId)) {
+                  const next = state.items.filter((i): i is FileItem => i.type === 'file')[0]?.id ?? null;
+                  set({ activeFileId: next } as any);
+                }
             }
         } catch (error) {
             console.error('Failed to fetch files:', error);
@@ -190,7 +212,7 @@ export const useStore = create<AppState>()(
         if (!item) return;
 
         try {
-            const serverFile = await fileApi.getOne(id);
+            const serverFile = await fileApi.getOne(id, { silent: true });
             const serverTime = parseTime((serverFile as any).updatedAt);
             const localTime = parseTime((item as any).updatedAt);
 
@@ -200,7 +222,12 @@ export const useStore = create<AppState>()(
                     items: normalizeItems(state.items.map(i => i.id === (serverFile as any).id ? { ...(serverFile as any), updatedAt: serverTime } : i))
                 }));
             }
-        } catch (error) {
+        } catch (error: any) {
+            const status = error?.response?.status;
+            if (status === 404) {
+              void get().syncFile(id);
+              return;
+            }
             console.error('Check update failed', error);
         }
       },
@@ -217,7 +244,16 @@ export const useStore = create<AppState>()(
           updatedAt: Date.now(),
         };
         set((state) => ({ items: normalizeItems([...state.items, newFile]), activeFileId: newFile.id }));
-        if (get().token) fileApi.upsert(newFile).catch(console.error);
+        if (get().token) {
+          void fileApi
+            .upsert(newFile)
+            .then((serverItem: any) => {
+              set((state) => ({
+                items: normalizeItems(state.items.map((i) => (i.id === serverItem.id ? { ...i, ...serverItem } : i))),
+              }));
+            })
+            .catch(console.error);
+        }
       },
 
       createFolder: (name, parentId) => {
@@ -230,7 +266,16 @@ export const useStore = create<AppState>()(
           updatedAt: Date.now(),
         };
         set((state) => ({ items: normalizeItems([...state.items, newFolder]) }));
-        if (get().token) fileApi.upsert(newFolder).catch(console.error);
+        if (get().token) {
+          void fileApi
+            .upsert(newFolder)
+            .then((serverItem: any) => {
+              set((state) => ({
+                items: normalizeItems(state.items.map((i) => (i.id === serverItem.id ? { ...i, ...serverItem } : i))),
+              }));
+            })
+            .catch(console.error);
+        }
       },
 
       updateFile: (id, content) => set((state) => ({
@@ -242,11 +287,22 @@ export const useStore = create<AppState>()(
       })),
 
       renameItem: (id, name) => {
+        const existing = get().items.find((f) => f.id === id);
+        if (!existing) return;
+        const next: any = { ...existing, name, updatedAt: Date.now() };
         set((state) => ({
-            items: state.items.map((f) => f.id === id ? { ...f, name, updatedAt: Date.now() } : f)
+          items: normalizeItems(state.items.map((f) => (f.id === id ? next : f))),
         }));
-        const item = get().items.find(f => f.id === id);
-        if (item && get().token) fileApi.upsert(item).catch(console.error);
+        if (get().token) {
+          void fileApi
+            .upsert(next)
+            .then((serverItem: any) => {
+              set((state) => ({
+                items: normalizeItems(state.items.map((i) => (i.id === serverItem.id ? { ...i, ...serverItem } : i))),
+              }));
+            })
+            .catch(console.error);
+        }
       },
 
       deleteItem: (id) => {
@@ -287,11 +343,22 @@ export const useStore = create<AppState>()(
       },
 
       moveItem: (id, newParentId) => {
+        const existing = get().items.find((f) => f.id === id);
+        if (!existing) return;
+        const next: any = { ...existing, parentId: newParentId, updatedAt: Date.now() };
         set((state) => ({
-            items: state.items.map((f) => f.id === id ? { ...f, parentId: newParentId, updatedAt: Date.now() } : f)
+          items: normalizeItems(state.items.map((f) => (f.id === id ? next : f))),
         }));
-        const item = get().items.find(f => f.id === id);
-        if (item && get().token) fileApi.upsert(item).catch(console.error);
+        if (get().token) {
+          void fileApi
+            .upsert(next)
+            .then((serverItem: any) => {
+              set((state) => ({
+                items: normalizeItems(state.items.map((i) => (i.id === serverItem.id ? { ...i, ...serverItem } : i))),
+              }));
+            })
+            .catch(console.error);
+        }
       },
 
       importFile: (name, content, parentId) => {
@@ -315,19 +382,35 @@ export const useStore = create<AppState>()(
           updatedAt: Date.now(),
         };
         set((state) => ({ items: normalizeItems([...state.items, newFile]), activeFileId: newFile.id }));
-        if (get().token) fileApi.upsert(newFile).catch(console.error);
+        if (get().token) {
+          void fileApi
+            .upsert(newFile)
+            .then((serverItem: any) => {
+              set((state) => ({
+                items: normalizeItems(state.items.map((i) => (i.id === serverItem.id ? { ...i, ...serverItem } : i))),
+              }));
+            })
+            .catch(console.error);
+        }
       },
 
       convertFileFormat: (id, targetFormat) => {
+        const existing = get().items.find((f) => f.id === id);
+        if (!existing || existing.type !== 'file') return;
+        const next: any = { ...existing, format: targetFormat, updatedAt: Date.now() };
         set((state) => ({
-            items: state.items.map((f) => 
-            f.id === id && f.type === 'file' 
-                ? { ...f, format: targetFormat, updatedAt: Date.now() } 
-                : f
-            )
+          items: normalizeItems(state.items.map((f) => (f.id === id ? next : f))),
         }));
-        const item = get().items.find(f => f.id === id);
-        if (item && get().token) fileApi.upsert(item).catch(console.error);
+        if (get().token) {
+          void fileApi
+            .upsert(next)
+            .then((serverItem: any) => {
+              set((state) => ({
+                items: normalizeItems(state.items.map((i) => (i.id === serverItem.id ? { ...i, ...serverItem } : i))),
+              }));
+            })
+            .catch(console.error);
+        }
       },
 
       setActiveFile: (id) => set({ activeFileId: id }),
@@ -353,7 +436,7 @@ export const useStore = create<AppState>()(
             storageType: s.storageType,
             s3Config: s.s3Config,
             webDavConfig: s.webDavConfig,
-          }).catch(() => undefined);
+          }, { silent: true }).catch(() => undefined);
         }, 600);
       },
 
@@ -383,7 +466,27 @@ export const useStore = create<AppState>()(
     }),
     {
       name: 'betterwriter-storage-v2', // New storage key for schema change
-      partialize: (state) => ({ items: state.items, settings: state.settings, user: state.user, token: state.token }),
+      version: 3,
+      partialize: (state) => ({ items: state.items, activeFileId: state.activeFileId, settings: state.settings, user: state.user, token: state.token }),
+      migrate: (persistedState: any) => {
+        if (!persistedState || !Array.isArray(persistedState.items)) return persistedState;
+        const idMap = new Map<string, string>();
+        for (const it of persistedState.items) {
+          if (it?.id === '1') idMap.set('1', uuidv4());
+        }
+        if (idMap.size === 0) return persistedState;
+        const mapId = (v: any) => (v && idMap.has(v) ? idMap.get(v) : v);
+        const items = persistedState.items.map((it: any) => ({
+          ...it,
+          id: mapId(it.id),
+          parentId: mapId(it.parentId),
+        }));
+        return {
+          ...persistedState,
+          items,
+          activeFileId: mapId(persistedState.activeFileId),
+        };
+      },
       merge: (persistedState, currentState) => {
         const merged: AppState = { ...currentState, ...(persistedState || {}) } as AppState;
         merged.items = normalizeItems(merged.items);
