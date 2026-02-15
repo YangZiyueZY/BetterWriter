@@ -1,25 +1,38 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 export const Graphviz: React.FC<{ dot: string }> = ({ dot }) => {
   const normalized = useMemo(() => String(dot || '').replace(/\n$/, ''), [dot]);
   const [svg, setSvg] = useState<string>('');
   const [error, setError] = useState<string>('');
+  const [loading, setLoading] = useState<boolean>(false);
+  const lastNormalizedRef = useRef<string>('');
 
   useEffect(() => {
-    let cancelled = false;
-    setSvg('');
-    setError('');
-    if (!normalized.trim()) return;
+    if (normalized === lastNormalizedRef.current) return;
+    lastNormalizedRef.current = normalized;
 
+    let cancelled = false;
+    setError('');
+    if (!normalized.trim()) {
+      setSvg('');
+      return;
+    }
+
+    setLoading(true);
     (async () => {
       try {
         const mod = (await import('@viz-js/viz')) as unknown;
         const vizFactory = (mod as { default: () => Promise<{ renderString: (dot: string, opts: { format: string; engine: string }) => Promise<string> }> }).default;
         const viz = await vizFactory();
         const out: string = await viz.renderString(normalized, { format: 'svg', engine: 'dot' });
-        if (!cancelled) setSvg(out);
+        if (!cancelled) {
+          setSvg(out);
+          setError('');
+        }
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (!cancelled) setLoading(false);
       }
     })();
 
@@ -36,12 +49,16 @@ export const Graphviz: React.FC<{ dot: string }> = ({ dot }) => {
     );
   }
 
-  if (!svg) {
+  if (!svg && loading) {
     return (
       <div className="p-4 bg-slate-50 dark:bg-slate-900/50 text-slate-500 dark:text-slate-400 rounded-lg text-sm font-mono border border-slate-200/60 dark:border-slate-800/60">
         正在渲染…
       </div>
     );
+  }
+
+  if (!svg) {
+    return null;
   }
 
   const src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;

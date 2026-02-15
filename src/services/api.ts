@@ -4,7 +4,7 @@ import { setBackendDown, setBackendUp } from '../lib/backendStatus';
 import { startLoading, stopLoading } from '../lib/loadingManager';
 
 const defaultApiUrl = typeof window !== 'undefined' ? `http://${window.location.hostname}:3001/api` : 'http://localhost:3001/api';
-const API_URL = (import.meta as any).env?.VITE_API_BASE_URL || defaultApiUrl;
+const API_URL = (import.meta as any).env?.VITE_API_BASE_URL || (import.meta as any).env?.DEV ? '/api' : defaultApiUrl;
 
 const api = axios.create({
   baseURL: API_URL,

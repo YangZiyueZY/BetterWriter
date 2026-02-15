@@ -17,12 +17,13 @@ export const Mermaid: React.FC<MermaidProps> = React.memo(({ chart }) => {
   const [error, setError] = useState<string>('');
   const idRef = useRef(`mermaid-${uuidv4()}`);
   const initRef = useRef(false);
-  const seqRef = useRef(0);
+  const lastChartRef = useRef<string>('');
 
   useEffect(() => {
+    if (chart === lastChartRef.current) return;
+    lastChartRef.current = chart;
 
     let cancelled = false;
-    const seq = ++seqRef.current;
 
     const shouldIgnoreMermaidConsole = (args: unknown[]) => {
       for (const a of args) {
@@ -80,7 +81,7 @@ export const Mermaid: React.FC<MermaidProps> = React.memo(({ chart }) => {
           restore();
         }
 
-        if (cancelled || seq !== seqRef.current) return;
+        if (cancelled) return;
 
         const bad = /aria-roledescription="error"|class="error-text"|syntax error in text|mermaid version/i.test(svgContent);
         if (bad) {
@@ -90,7 +91,7 @@ export const Mermaid: React.FC<MermaidProps> = React.memo(({ chart }) => {
         setError('');
         if (svgContent) setSvg(svgContent);
       } catch {
-        if (cancelled || seq !== seqRef.current) return;
+        if (cancelled) return;
         setError('Mermaid 渲染失败');
         return;
       }
